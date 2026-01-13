@@ -37,6 +37,7 @@ using drake::lcmt_iiwa_status_telemetry;
 namespace {
 
 const int kNumJoints = 7;
+const char* kDefaultIpAddress = "192.170.10.2";
 const int kDefaultPort = 30200;
 const char* kLcmStatusChannel = "IIWA_STATUS";
 const char* kLcmStatusTelemetryChannel = "IIWA_STATUS_TELEMETRY";
@@ -71,6 +72,22 @@ int64_t micros() {
       std::chrono::system_clock::now().time_since_epoch()).count();
 }
 
+std::string IncrementLastOctet(const std::string &ip, int increment) {
+    // find last dot
+    size_t pos = ip.rfind('.');
+    if (pos == std::string::npos) {
+        throw std::invalid_argument("Invalid IP string");
+    }
+
+    std::string prefix = ip.substr(0, pos);
+    std::string last = ip.substr(pos + 1);
+
+    int val = std::stoi(last);
+    val += increment;   // add increment
+
+    return prefix + "." + std::to_string(val);
+}
+
 }  // namespace
 
 DEFINE_double(ext_trq_limit, kJointTorqueSafetyMarginNm,
@@ -79,6 +96,7 @@ DEFINE_string(joint_ext_trq_limit, "", "Specify the maximum external torque "
               "that triggers safety freeze on a per-joint basis.  "
               "This is a comma separated list of numbers e.g. "
               "100,100,53.7,30,30,28.5,10.  Overrides ext_trq_limit.");
+DEFINE_string(fri_ip, kDefaultIpAddress, "IP address for FRI messages");
 DEFINE_int32(fri_port, kDefaultPort, "First UDP port for FRI messages");
 DEFINE_string(lcm_url, "", "LCM URL for Kuka driver");
 DEFINE_int32(num_robots, 1, "Number of robots to control");
@@ -550,7 +568,7 @@ class KukaFRIClient : public KUKA::FRI::LBRClient {
   void monitor() override {
     KUKA::FRI::LBRClient::monitor();
     lcm_client_->UpdateRobotState(robot_id_, robotState());
-    
+
     // IIR filter initialization with measured data (should be run always)
     for (int i = 0; i < numIIRCoeff + 1; i++) {
       IIRFilter(robotState().getMeasuredJointPosition());
@@ -778,13 +796,15 @@ int do_main() {
     connections.emplace_back();
     clients.emplace_back(i, &lcm_client);
     apps.emplace_back(connections[i], clients[i]);
-    apps[i].connect(FLAGS_fri_port + i, NULL);
+    const int port = FLAGS_fri_port + i;
+    const std::string ip = IncrementLastOctet(FLAGS_fri_ip, i);
+    apps[i].connect(port, ip.c_str());
 
     fds[i].fd = connections[i].udpSock();
     fds[i].events = POLLIN;
     fds[i].revents = 0;
     std::cerr << "Listening for robot " << i
-              << " port " << FLAGS_fri_port + i
+              << " on " << ip << ":" << port
               << std::endl;
   }
   fds.back().fd = lcm_client.GetLcmFileno();
